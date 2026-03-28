@@ -63,6 +63,10 @@ class Settings(BaseSettings):
         default=Path("./data/feature_store"),
         alias="DATA_FEATURE_STORE_PATH",
     )
+    data_analytics_marts_path: Path = Field(
+        default=Path("./data/analytics_marts"),
+        alias="DATA_ANALYTICS_MARTS_PATH",
+    )
     data_source_path: Path = Field(default=Path("./data/source"), alias="DATA_SOURCE_PATH")
     patients_source_path: Path | None = Field(default=None, alias="PATIENTS_SOURCE_PATH")
     trials_source_path: Path | None = Field(default=None, alias="TRIALS_SOURCE_PATH")
@@ -73,6 +77,14 @@ class Settings(BaseSettings):
     llm_base_url: str | None = Field(default=None, alias="LLM_BASE_URL")
     llm_model: str | None = Field(default=None, alias="LLM_MODEL")
     llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
+    phase5_reports_path: Path = Field(
+        default=Path("./artifacts/reports/phase5"),
+        alias="PHASE5_REPORTS_PATH",
+    )
+    phase6_reports_path: Path = Field(
+        default=Path("./artifacts/reports/phase6"),
+        alias="PHASE6_REPORTS_PATH",
+    )
 
     @property
     def resolved_postgres_url(self) -> str:
