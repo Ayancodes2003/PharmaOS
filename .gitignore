@@ -205,3 +205,22 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# PHARMA-OS generated assets
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/load_ready/*
+!data/load_ready/.gitkeep
+data/feature_ready/*
+!data/feature_ready/.gitkeep
+data/feature_store/*
+!data/feature_store/.gitkeep
+
+artifacts/models/*
+!artifacts/models/.gitkeep
+artifacts/metrics/*
+!artifacts/metrics/.gitkeep
+artifacts/reports/*
+!artifacts/reports/.gitkeep
