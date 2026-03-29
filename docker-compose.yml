@@ -1,6 +1,44 @@
 version: "3.9"
 
 services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pharmaos-app
+    env_file:
+      - .env.example
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: pharma_os
+      POSTGRES_USER: pharma_admin
+      POSTGRES_PASSWORD: pharma_admin
+      MONGO_HOST: mongo
+      MONGO_PORT: 27017
+      MONGO_DB: pharma_os
+      MONGO_USER: pharma_admin
+      MONGO_PASSWORD: pharma_admin
+      MONGO_AUTH_SOURCE: admin
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./artifacts:/app/artifacts
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/system/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16
     container_name: pharmaos-postgres
@@ -29,7 +67,7 @@ services:
     volumes:
       - mongo_data:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--username", "pharma_admin", "--password", "pharma_admin", "--authenticationDatabase", "admin", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5

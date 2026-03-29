@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     mongo_db: str = Field(default="pharma_os", alias="MONGO_DB")
     mongo_user: str | None = Field(default=None, alias="MONGO_USER")
     mongo_password: str | None = Field(default=None, alias="MONGO_PASSWORD")
+    mongo_auth_source: str = Field(default="admin", alias="MONGO_AUTH_SOURCE")
 
     artifact_root: Path = Field(default=Path("./artifacts"), alias="ARTIFACT_ROOT")
     model_registry_path: Path = Field(default=Path("./artifacts/models"), alias="MODEL_REGISTRY_PATH")
@@ -112,7 +113,10 @@ class Settings(BaseSettings):
         if self.mongo_user and self.mongo_password:
             user = quote_plus(self.mongo_user)
             password = quote_plus(self.mongo_password)
-            return f"mongodb://{user}:{password}@{self.mongo_host}:{self.mongo_port}"
+            return (
+                f"mongodb://{user}:{password}@{self.mongo_host}:{self.mongo_port}"
+                f"/?authSource={quote_plus(self.mongo_auth_source)}"
+            )
 
         return f"mongodb://{self.mongo_host}:{self.mongo_port}"
 
