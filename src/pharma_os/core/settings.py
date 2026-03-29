@@ -85,6 +85,10 @@ class Settings(BaseSettings):
         default=Path("./artifacts/reports/phase6"),
         alias="PHASE6_REPORTS_PATH",
     )
+    phase7_reports_path: Path = Field(
+        default=Path("./artifacts/reports/phase7"),
+        alias="PHASE7_REPORTS_PATH",
+    )
 
     @property
     def resolved_postgres_url(self) -> str:

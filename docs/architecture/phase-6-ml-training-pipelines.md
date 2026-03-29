@@ -39,3 +39,15 @@ Train and evaluate reproducible models using Phase 5 feature artifacts with expl
 
 - Eligibility and safety: use explicit labels when available; otherwise derive conservative proxy labels from present-time clinical suitability/risk criteria.
 - Recruitment: if no explicit supervised label is available, persist deterministic score-based ranking config instead of fabricating labels.
+
+## Phase 6.5 Integrity Hardening
+
+- Target provenance is explicit in all metadata (`observed_ground_truth`, `derived_proxy`, `deterministic_score`).
+- Weak-label runs are flagged with warnings and context-specific performance-claim guidance.
+- Leakage guards now persist:
+	- identifier exclusions
+	- target column exclusions
+	- proxy derivation-column exclusions
+	- token-based leakage exclusions
+- Training metadata persists split sizes and model-selection rationale for reproducibility and reviewability.
+- Recruitment score-only path is explicitly labeled as non-supervised prioritization (not a trained ranking model).
