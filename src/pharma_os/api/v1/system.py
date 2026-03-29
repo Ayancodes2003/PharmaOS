@@ -62,3 +62,15 @@ async def readiness(
     )
 
     return SuccessResponse(message="readiness evaluated", data=payload)
+
+
+@router.get("/metadata", response_model=SuccessResponse[dict[str, str]], status_code=status.HTTP_200_OK)
+async def metadata(settings: Settings = Depends(get_app_settings)) -> SuccessResponse[dict[str, str]]:
+    """Basic service metadata endpoint for deployment and diagnostics."""
+    payload = {
+        "app_name": settings.app_name,
+        "version": settings.app_version,
+        "environment": settings.app_env,
+        "api_prefix": settings.api_v1_prefix,
+    }
+    return SuccessResponse(message="service metadata retrieved", data=payload)

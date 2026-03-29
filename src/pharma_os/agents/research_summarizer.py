@@ -12,6 +12,7 @@ from pharma_os.agents.base import (
     ResearchSummarizerRequest,
     ResearchSummaryResult,
 )
+from pharma_os.agents.llm.provider import Message
 from pharma_os.agents.prompts import PromptRegistry
 
 logger = logging.getLogger(__name__)
@@ -87,13 +88,14 @@ class ResearchSummarizerAgent(BaseAgent):
 
             # Prepare analysis messages
             messages = []
-            if request.query:
-                messages.append(
-                    __import__("pharma_os.agents.llm.provider", fromlist=["Message"]).Message(
-                        "user",
-                        f"Summarize in context of this query: {request.query}",
-                    )
+            messages.append(
+                Message(
+                    "user",
+                    f"Context: {context_summary}",
                 )
+            )
+            if request.query:
+                messages.append(Message("user", f"Summarize in context of this query: {request.query}"))
 
             # Call LLM for synthesis
             synthesis_text = await self.llm_provider.complete(
@@ -122,7 +124,6 @@ class ResearchSummarizerAgent(BaseAgent):
                 answer=answer,
                 document_references=document_references,
                 extensibility_note="This research layer is extensible for RAG integration and broader literature indexing.",
-                tool_calls_used=["document_retrieval", "trial_lookup"],
             )
 
             return result
@@ -151,18 +152,15 @@ class ResearchSummarizerAgent(BaseAgent):
         Returns:
             Tuple of (context_summary, document_references)
         """
-        from pharma_os.db.repositories.trial_repository import TrialRepository
-
-        trial_repo = TrialRepository(context.session)
-
-        trial = None
-        try:
-            from uuid import UUID
-
-            trial_uuid = UUID(trial_id)
-            trial = trial_repo.get_by_id(trial_uuid)
-        except (ValueError, TypeError):
-            trial = trial_repo.get_by_trial_code(trial_id)
+        trial_data = await context.invoke_tool(
+            "trial_lookup",
+            {
+                "session": context.session,
+                "trial_id": trial_id,
+                "trial_code": trial_id,
+            },
+        )
+        trial = trial_data.get("trial") if trial_data else None
 
         if not trial:
             return f"Trial not found: {trial_id}", []
@@ -192,6 +190,17 @@ class ResearchSummarizerAgent(BaseAgent):
             refs.append(f"criteria:{trial.inclusion_criteria_ref}")
         if trial.exclusion_criteria_ref:
             refs.append(f"criteria:{trial.exclusion_criteria_ref}")
+
+        doc_data = await context.invoke_tool(
+            "document_retrieval",
+            {
+                "session": context.session,
+                "trial_id": trial_id,
+                "document_type": "trial_criteria",
+            },
+        )
+        if doc_data and doc_data.get("documents"):
+            refs.extend([f"doc:{doc.get('reference')}" for doc in doc_data["documents"] if doc.get("reference")])
 
         return summary, refs
 

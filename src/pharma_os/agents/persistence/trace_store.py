@@ -15,11 +15,16 @@ logger = logging.getLogger(__name__)
 class TraceStore:
     """Stores and retrieves agent traces from MongoDB."""
 
-    async def persist_trace(self, result: AgentResult) -> str | None:
+    async def persist_trace(
+        self,
+        result: AgentResult,
+        provider_metadata: dict[str, Any] | None = None,
+    ) -> str | None:
         """Persist an agent trace to MongoDB.
 
         Args:
             result: AgentResult to persist
+            provider_metadata: Optional provider metadata for trace enrichment
 
         Returns:
             Inserted document ID or None if persistence failed
@@ -28,6 +33,8 @@ class TraceStore:
             trace_collection = get_agent_traces_collection()
 
             # Build metadata
+            provider_metadata = provider_metadata or {}
+
             metadata = AgentTraceMetadata(
                 agent_type=result.agent_type.value,
                 agent_name=result.agent_type.value.replace("_", " ").title(),
@@ -35,15 +42,18 @@ class TraceStore:
                 success=result.success,
                 error=result.error,
                 tool_calls_count=len(result.tool_calls_used),
+                model_name=provider_metadata.get("model_name"),
+                provider=provider_metadata.get("provider"),
+                stub_mode=provider_metadata.get("stub_mode"),
             )
 
             # Build trace record
             trace_record = AgentTraceRecord(
-                trace_id=result.trace_id,
+                trace_id=result.trace_id or f"trace_{int(datetime.utcnow().timestamp())}",
                 timestamp=datetime.utcnow(),
                 metadata=metadata.dict(),
                 request_type=result.agent_type.value,
-                result_summary=str(result)[:500],  # Truncate for storage
+                result_summary=str(result)[:500],
                 tool_calls=[{"tool_name": tc} for tc in result.tool_calls_used],
             )
 

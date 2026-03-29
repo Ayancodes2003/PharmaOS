@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 from typing import Any
 
 from pharma_os.agents.base.tools import Tool, ToolResult
@@ -30,10 +31,13 @@ class PatientLookupTool(Tool):
         Returns:
             ToolResult with patient data
         """
-        from pharma_os.db.repositories.patient_repository import PatientRepository
-        from sqlalchemy.orm import Session
-
         try:
+            from pharma_os.db.repositories.patient_repository import PatientRepository
+
+            session = args.get("session")
+            if not session:
+                return ToolResult(success=False, error="session is required")
+
             # Get patient_id or external_patient_id from args
             patient_id = args.get("patient_id")
             external_patient_id = args.get("external_patient_id")
@@ -44,21 +48,25 @@ class PatientLookupTool(Tool):
                     error="Must provide patient_id or external_patient_id",
                 )
 
-            # Note: In real execution, session will be injected via context
-            # This is a template - actual execution handled by agent
+            patient_repo = PatientRepository(session)
+            patient = None
+            if patient_id:
+                try:
+                    patient = patient_repo.get(UUID(str(patient_id)))
+                except (ValueError, TypeError):
+                    patient = patient_repo.get_by_external_patient_id(str(patient_id))
+            if not patient and external_patient_id:
+                patient = patient_repo.get_by_external_patient_id(str(external_patient_id))
+
+            if not patient:
+                return ToolResult(success=False, error="Patient not found")
+
             return ToolResult(
                 success=True,
                 data={
-                    "patient_id": patient_id or external_patient_id,
-                    "age": None,  # Will be populated
-                    "sex": None,
-                    "primary_condition": None,
-                    "diagnosis_code": None,
-                    "comorbidity_summary": None,
-                    "enrollment_status": None,
-                    "is_active": None,
+                    "patient": patient,
                 },
-                message=f"Patient lookup for {patient_id or external_patient_id}",
+                message=f"Patient lookup for {patient.external_patient_id}",
             )
 
         except Exception as e:
@@ -87,6 +95,12 @@ class TrialLookupTool(Tool):
             ToolResult with trial data
         """
         try:
+            from pharma_os.db.repositories.trial_repository import TrialRepository
+
+            session = args.get("session")
+            if not session:
+                return ToolResult(success=False, error="session is required")
+
             trial_id = args.get("trial_id")
             trial_code = args.get("trial_code")
 
@@ -96,22 +110,25 @@ class TrialLookupTool(Tool):
                     error="Must provide trial_id or trial_code",
                 )
 
+            trial_repo = TrialRepository(session)
+            trial = None
+            if trial_id:
+                try:
+                    trial = trial_repo.get(UUID(str(trial_id)))
+                except (ValueError, TypeError):
+                    trial = trial_repo.get_by_trial_code(str(trial_id))
+            if not trial and trial_code:
+                trial = trial_repo.get_by_trial_code(str(trial_code))
+
+            if not trial:
+                return ToolResult(success=False, error="Trial not found")
+
             return ToolResult(
                 success=True,
                 data={
-                    "trial_id": trial_id or trial_code,
-                    "trial_code": trial_code,
-                    "title": None,
-                    "indication": None,
-                    "phase": None,
-                    "status": None,
-                    "sponsor": None,
-                    "inclusion_criteria_ref": None,
-                    "exclusion_criteria_ref": None,
-                    "recruitment_target": None,
-                    "enrolled_count": None,
+                    "trial": trial,
                 },
-                message=f"Trial lookup for {trial_id or trial_code}",
+                message=f"Trial lookup for {trial.trial_code}",
             )
 
         except Exception as e:
@@ -140,6 +157,12 @@ class AdverseEventLookupTool(Tool):
             ToolResult with adverse event data
         """
         try:
+            from pharma_os.db.repositories.adverse_event_repository import AdverseEventRepository
+
+            session = args.get("session")
+            if not session:
+                return ToolResult(success=False, error="session is required")
+
             patient_id = args.get("patient_id")
             limit = args.get("limit", 20)
 
@@ -149,13 +172,16 @@ class AdverseEventLookupTool(Tool):
                     error="Must provide patient_id",
                 )
 
+            adverse_event_repo = AdverseEventRepository(session)
+            events = adverse_event_repo.list_by_patient(UUID(str(patient_id)), limit=int(limit))
+
             return ToolResult(
                 success=True,
                 data={
                     "patient_id": patient_id,
-                    "events": [],  # Will be populated
-                    "serious_count": 0,
-                    "event_count": limit,
+                    "events": events,
+                    "serious_count": sum(1 for event in events if event.is_serious),
+                    "event_count": len(events),
                 },
                 message=f"Adverse events for patient {patient_id}",
             )
@@ -186,6 +212,12 @@ class DrugExposureLookupTool(Tool):
             ToolResult with drug exposure data
         """
         try:
+            from pharma_os.db.repositories.drug_exposure_repository import DrugExposureRepository
+
+            session = args.get("session")
+            if not session:
+                return ToolResult(success=False, error="session is required")
+
             patient_id = args.get("patient_id")
             limit = args.get("limit", 20)
 
@@ -195,13 +227,16 @@ class DrugExposureLookupTool(Tool):
                     error="Must provide patient_id",
                 )
 
+            drug_exposure_repo = DrugExposureRepository(session)
+            exposures = drug_exposure_repo.list_by_patient(UUID(str(patient_id)), limit=int(limit))
+
             return ToolResult(
                 success=True,
                 data={
                     "patient_id": patient_id,
-                    "exposures": [],  # Will be populated
-                    "active_count": 0,
-                    "total_count": 0,
+                    "exposures": exposures,
+                    "active_count": sum(1 for exposure in exposures if exposure.is_active),
+                    "total_count": len(exposures),
                 },
                 message=f"Drug exposures for patient {patient_id}",
             )
@@ -232,9 +267,19 @@ class PredictionLookupTool(Tool):
             ToolResult with prediction data
         """
         try:
+            from pharma_os.db.repositories.prediction_repository import (
+                EligibilityPredictionRepository,
+                SafetyPredictionRepository,
+            )
+
+            session = args.get("session")
+            if not session:
+                return ToolResult(success=False, error="session is required")
+
             prediction_type = args.get("prediction_type")
             patient_id = args.get("patient_id")
             trial_id = args.get("trial_id")
+            drug_exposure_id = args.get("drug_exposure_id")
 
             if not prediction_type:
                 return ToolResult(
@@ -242,11 +287,41 @@ class PredictionLookupTool(Tool):
                     error="Must provide prediction_type (eligibility|safety|recruitment)",
                 )
 
-            if prediction_type == "eligibility" and not patient_id:
+            if prediction_type == "eligibility" and (not patient_id or not trial_id):
                 return ToolResult(
                     success=False,
-                    error="Eligibility predictions require patient_id",
+                    error="Eligibility predictions require patient_id and trial_id",
                 )
+
+            prediction_payload: dict[str, Any] | None = None
+            if prediction_type == "eligibility":
+                repo = EligibilityPredictionRepository(session)
+                prediction = repo.latest_for_patient_trial(UUID(str(patient_id)), UUID(str(trial_id)))
+                if prediction:
+                    prediction_payload = {
+                        "probability": float(prediction.probability) if hasattr(prediction, "probability") else None,
+                        "inference_timestamp": str(prediction.inference_timestamp)
+                        if hasattr(prediction, "inference_timestamp")
+                        else None,
+                    }
+            elif prediction_type == "safety":
+                repo = SafetyPredictionRepository(session)
+                prediction = repo.latest_for_patient_exposure(
+                    UUID(str(patient_id)),
+                    UUID(str(drug_exposure_id)) if drug_exposure_id else None,
+                )
+                if prediction:
+                    prediction_payload = {
+                        "risk_probability": float(prediction.risk_probability)
+                        if hasattr(prediction, "risk_probability")
+                        else None,
+                        "risk_class": str(prediction.risk_class)
+                        if hasattr(prediction, "risk_class")
+                        else None,
+                        "inference_timestamp": str(prediction.inference_timestamp)
+                        if hasattr(prediction, "inference_timestamp")
+                        else None,
+                    }
 
             return ToolResult(
                 success=True,
@@ -254,7 +329,7 @@ class PredictionLookupTool(Tool):
                     "prediction_type": prediction_type,
                     "patient_id": patient_id,
                     "trial_id": trial_id,
-                    "prediction": None,  # Will be populated
+                    "prediction": prediction_payload,
                 },
                 message=f"{prediction_type} prediction lookup",
             )
@@ -285,6 +360,9 @@ class DocumentRetrievalTool(Tool):
             ToolResult with document data
         """
         try:
+            from pharma_os.db.repositories.trial_repository import TrialRepository
+
+            session = args.get("session")
             document_type = args.get("document_type", "trial_criteria")
             trial_id = args.get("trial_id")
             query = args.get("query")
@@ -295,11 +373,26 @@ class DocumentRetrievalTool(Tool):
                     error="Must provide trial_id or query",
                 )
 
+            documents: list[dict[str, Any]] = []
+            if trial_id and session:
+                trial_repo = TrialRepository(session)
+                trial = None
+                try:
+                    trial = trial_repo.get(UUID(str(trial_id)))
+                except (ValueError, TypeError):
+                    trial = trial_repo.get_by_trial_code(str(trial_id))
+
+                if trial:
+                    if trial.inclusion_criteria_ref:
+                        documents.append({"type": "inclusion", "reference": trial.inclusion_criteria_ref})
+                    if trial.exclusion_criteria_ref:
+                        documents.append({"type": "exclusion", "reference": trial.exclusion_criteria_ref})
+
             return ToolResult(
                 success=True,
                 data={
                     "document_type": document_type,
-                    "documents": [],  # Will be populated or retrieved via RAG
+                    "documents": documents,
                     "query": query,
                 },
                 message=f"Document retrieval for {document_type}",

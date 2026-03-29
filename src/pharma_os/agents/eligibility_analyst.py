@@ -12,6 +12,7 @@ from pharma_os.agents.base import (
     EligibilityAnalystRequest,
     ExecutionContext,
 )
+from pharma_os.agents.llm.provider import Message
 from pharma_os.agents.prompts import PromptRegistry
 
 logger = logging.getLogger(__name__)
@@ -54,20 +55,16 @@ class EligibilityAnalystAgent(BaseAgent):
         start_time = time.time()
 
         try:
-            # Get patient data from repository
-            from pharma_os.db.repositories.patient_repository import PatientRepository
-
-            patient_repo = PatientRepository(context.session)
-
-            # Try to get by UUID first, then by external ID
-            patient = None
-            try:
-                from uuid import UUID
-
-                patient_id = UUID(request.patient_id)
-                patient = patient_repo.get_by_id(patient_id)
-            except (ValueError, TypeError):
-                patient = patient_repo.get_by_external_patient_id(request.patient_id)
+            # Gather grounded tool context
+            patient_data = await context.invoke_tool(
+                "patient_lookup",
+                {
+                    "session": context.session,
+                    "patient_id": request.patient_id,
+                    "external_patient_id": request.patient_id,
+                },
+            )
+            patient = patient_data.get("patient") if patient_data else None
 
             if not patient:
                 execution_time_ms = (time.time() - start_time) * 1000
@@ -78,19 +75,15 @@ class EligibilityAnalystAgent(BaseAgent):
                     error=f"Patient not found: {request.patient_id}",
                 )
 
-            # Get trial data from repository
-            from pharma_os.db.repositories.trial_repository import TrialRepository
-
-            trial_repo = TrialRepository(context.session)
-
-            trial = None
-            try:
-                from uuid import UUID
-
-                trial_id = UUID(request.trial_id)
-                trial = trial_repo.get_by_id(trial_id)
-            except (ValueError, TypeError):
-                trial = trial_repo.get_by_trial_code(request.trial_id)
+            trial_data = await context.invoke_tool(
+                "trial_lookup",
+                {
+                    "session": context.session,
+                    "trial_id": request.trial_id,
+                    "trial_code": request.trial_id,
+                },
+            )
+            trial = trial_data.get("trial") if trial_data else None
 
             if not trial:
                 execution_time_ms = (time.time() - start_time) * 1000
@@ -104,13 +97,41 @@ class EligibilityAnalystAgent(BaseAgent):
             # Build context information
             patient_summary = self._summarize_patient(patient)
             trial_summary = self._summarize_trial(trial)
-            adverse_events_summary = self._summarize_adverse_events(patient)
-            drug_exposures_summary = self._summarize_drug_exposures(patient)
+            adverse_events_data = await context.invoke_tool(
+                "adverse_event_lookup",
+                {
+                    "session": context.session,
+                    "patient_id": str(patient.id),
+                    "limit": 50,
+                },
+            )
+            adverse_events = adverse_events_data.get("events", []) if adverse_events_data else []
+            adverse_events_summary = self._summarize_adverse_events(adverse_events)
+
+            drug_exposures_data = await context.invoke_tool(
+                "drug_exposure_lookup",
+                {
+                    "session": context.session,
+                    "patient_id": str(patient.id),
+                    "limit": 50,
+                },
+            )
+            drug_exposures = drug_exposures_data.get("exposures", []) if drug_exposures_data else []
+            drug_exposures_summary = self._summarize_drug_exposures(drug_exposures)
 
             # Get prediction if available
             prediction_context = {}
             if request.include_prediction:
-                prediction_context = self._get_eligibility_prediction(patient, trial, context)
+                prediction_data = await context.invoke_tool(
+                    "prediction_lookup",
+                    {
+                        "session": context.session,
+                        "prediction_type": "eligibility",
+                        "patient_id": str(patient.id),
+                        "trial_id": str(trial.id),
+                    },
+                )
+                prediction_context = prediction_data.get("prediction") if prediction_data else {}
 
             # Build analysis using LLM
             system_prompt = self.prompt_registry.get_prompt_or_default(
@@ -118,8 +139,18 @@ class EligibilityAnalystAgent(BaseAgent):
                 "You are a clinical trial eligibility analyst.",
             )
 
+            llm_input = "\n".join(
+                [
+                    f"Patient Summary: {patient_summary}",
+                    f"Trial Summary: {trial_summary}",
+                    f"Adverse Events: {adverse_events_summary}",
+                    f"Drug Exposures: {drug_exposures_summary}",
+                    f"Prediction: {prediction_context}",
+                ]
+            )
+
             analysis_text = await self.llm_provider.complete(
-                messages=[],  # Will be constructed below
+                messages=[Message("user", llm_input)],
                 system_prompt=system_prompt,
                 temperature=0.7,
                 max_tokens=2000,
@@ -146,7 +177,6 @@ class EligibilityAnalystAgent(BaseAgent):
                     adverse_events_summary,
                     drug_exposures_summary,
                 ],
-                tool_calls_used=["patient_lookup", "trial_lookup", "adverse_event_lookup", "drug_exposure_lookup"],
             )
 
             return result
@@ -195,63 +225,35 @@ class EligibilityAnalystAgent(BaseAgent):
             f"enrolled: {trial.enrolled_count}/{trial.recruitment_target or 'N/A'}"
         )
 
-    def _summarize_adverse_events(self, patient: Any) -> str:
+    def _summarize_adverse_events(self, adverse_events: list[Any]) -> str:
         """Summarize adverse events.
 
         Args:
-            patient: Patient ORM model instance
+            adverse_events: Adverse event model instances
 
         Returns:
             Adverse events summary
         """
-        if not hasattr(patient, "adverse_events") or not patient.adverse_events:
+        if not adverse_events:
             return "No adverse events documented"
 
-        serious_count = sum(1 for ae in patient.adverse_events if ae.is_serious)
-        return f"Adverse events: {len(patient.adverse_events)} total, {serious_count} serious"
+        serious_count = sum(1 for ae in adverse_events if ae.is_serious)
+        return f"Adverse events: {len(adverse_events)} total, {serious_count} serious"
 
-    def _summarize_drug_exposures(self, patient: Any) -> str:
+    def _summarize_drug_exposures(self, drug_exposures: list[Any]) -> str:
         """Summarize drug exposures.
 
         Args:
-            patient: Patient ORM model instance
+            drug_exposures: Drug exposure model instances
 
         Returns:
             Drug exposures summary
         """
-        if not hasattr(patient, "drug_exposures") or not patient.drug_exposures:
+        if not drug_exposures:
             return "No current drug exposures"
 
-        active = sum(1 for de in patient.drug_exposures if de.is_active)
-        return f"Current medications: {active} active drugs, {len(patient.drug_exposures)} total exposures"
-
-    def _get_eligibility_prediction(self, patient: Any, trial: Any, context: ExecutionContext) -> dict[str, Any]:
-        """Get eligibility prediction if available.
-
-        Args:
-            patient: Patient model
-            trial: Trial model
-            context: Execution context
-
-        Returns:
-            Prediction context dictionary
-        """
-        try:
-            from pharma_os.db.repositories.prediction_repository import PredictionRepository
-
-            pred_repo = PredictionRepository(context.session)
-            predictions = pred_repo.get_eligibility_predictions(patient.id, trial.id)
-
-            if predictions:
-                latest = predictions[0]
-                return {
-                    "probability": float(latest.probability) if hasattr(latest, "probability") else None,
-                    "created_at": str(latest.created_at) if hasattr(latest, "created_at") else None,
-                }
-        except Exception as e:
-            logger.debug(f"Could not retrieve eligibility prediction: {e}")
-
-        return {}
+        active = sum(1 for de in drug_exposures if de.is_active)
+        return f"Current medications: {active} active drugs, {len(drug_exposures)} total exposures"
 
     def _extract_inclusion_reasoning(self, patient: Any, trial: Any) -> str:
         """Extract or infer inclusion reasoning.

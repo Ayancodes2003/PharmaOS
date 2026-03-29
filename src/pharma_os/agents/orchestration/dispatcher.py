@@ -115,6 +115,7 @@ class AgentDispatcher:
         context = ExecutionContext(
             session=session,
             settings=self.settings,
+            tool_registry=self.tool_registry,
             trace_id=request.trace_id,
             metadata=request.metadata,
         )
@@ -141,6 +142,7 @@ class AgentDispatcher:
         """
         agents = []
         for agent_type, agent in self._agents.items():
+            stub_mode = self.llm_provider.get_provider_name() == "stub"
             agents.append({
                 "agent_type": agent_type.value,
                 "agent_name": agent.get_agent_name(),
@@ -148,6 +150,7 @@ class AgentDispatcher:
                 "llm_available": self.llm_provider.is_available(),
                 "llm_provider": self.llm_provider.get_provider_name(),
                 "llm_model": self.llm_provider.get_model_name(),
+                "stub_mode": stub_mode,
             })
         return agents
 
@@ -197,7 +200,14 @@ class AgentExecutor:
 
             # Persist trace if store available
             if self.trace_store:
-                await self.trace_store.persist_trace(result)
+                await self.trace_store.persist_trace(
+                    result,
+                    provider_metadata={
+                        "provider": self.dispatcher.llm_provider.get_provider_name(),
+                        "model_name": self.dispatcher.llm_provider.get_model_name(),
+                        "stub_mode": self.dispatcher.llm_provider.get_provider_name() == "stub",
+                    },
+                )
 
             metadata = {
                 "trace_id": result.trace_id,
@@ -205,6 +215,9 @@ class AgentExecutor:
                 "success": result.success,
                 "execution_time_ms": result.execution_time_ms,
                 "tool_calls": len(result.tool_calls_used),
+                "llm_provider": self.dispatcher.llm_provider.get_provider_name(),
+                "llm_model": self.dispatcher.llm_provider.get_model_name(),
+                "stub_mode": self.dispatcher.llm_provider.get_provider_name() == "stub",
             }
 
             return result, metadata

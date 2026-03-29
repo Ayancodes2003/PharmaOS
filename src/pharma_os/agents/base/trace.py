@@ -19,6 +19,7 @@ class AgentTraceMetadata(BaseModel):
     tool_calls_count: int = 0
     model_name: str | None = None
     provider: str | None = None
+    stub_mode: bool | None = None
 
 
 class AgentTraceRecord(BaseModel):

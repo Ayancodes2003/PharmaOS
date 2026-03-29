@@ -16,6 +16,21 @@ class SuccessResponse(BaseModel, Generic[T]):
     data: T
 
 
+class PaginationMeta(BaseModel):
+    """Pagination metadata for list responses."""
+
+    limit: int
+    offset: int
+    count: int
+
+
+class PaginatedPayload(BaseModel, Generic[T]):
+    """Reusable paginated payload contract."""
+
+    items: list[T]
+    pagination: PaginationMeta
+
+
 class ErrorDetail(BaseModel):
     """Detailed error payload."""
 

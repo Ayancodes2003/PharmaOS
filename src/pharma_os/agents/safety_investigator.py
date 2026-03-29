@@ -13,6 +13,7 @@ from pharma_os.agents.base import (
     SafetyInvestigationResult,
     SafetyInvestigatorRequest,
 )
+from pharma_os.agents.llm.provider import Message
 from pharma_os.agents.prompts import PromptRegistry
 
 logger = logging.getLogger(__name__)
@@ -55,19 +56,15 @@ class SafetyInvestigatorAgent(BaseAgent):
         start_time = time.time()
 
         try:
-            # Get patient data
-            from pharma_os.db.repositories.patient_repository import PatientRepository
-
-            patient_repo = PatientRepository(context.session)
-
-            patient = None
-            try:
-                from uuid import UUID
-
-                patient_id = UUID(request.patient_id)
-                patient = patient_repo.get_by_id(patient_id)
-            except (ValueError, TypeError):
-                patient = patient_repo.get_by_external_patient_id(request.patient_id)
+            patient_data = await context.invoke_tool(
+                "patient_lookup",
+                {
+                    "session": context.session,
+                    "patient_id": request.patient_id,
+                    "external_patient_id": request.patient_id,
+                },
+            )
+            patient = patient_data.get("patient") if patient_data else None
 
             if not patient:
                 execution_time_ms = (time.time() - start_time) * 1000
@@ -80,14 +77,41 @@ class SafetyInvestigatorAgent(BaseAgent):
 
             # Get adverse events
             patient_summary = self._summarize_patient(patient)
-            recent_events = self._extract_recent_events(patient)
-            event_context = self._summarize_adverse_events(patient)
-            drug_context = self._summarize_drug_exposures(patient, request.drug_name)
+            adverse_events_data = await context.invoke_tool(
+                "adverse_event_lookup",
+                {
+                    "session": context.session,
+                    "patient_id": str(patient.id),
+                    "limit": 100,
+                },
+            )
+            adverse_events = adverse_events_data.get("events", []) if adverse_events_data else []
+            recent_events = self._extract_recent_events(adverse_events)
+            event_context = self._summarize_adverse_events(adverse_events)
+
+            drug_exposures_data = await context.invoke_tool(
+                "drug_exposure_lookup",
+                {
+                    "session": context.session,
+                    "patient_id": str(patient.id),
+                    "limit": 100,
+                },
+            )
+            drug_exposures = drug_exposures_data.get("exposures", []) if drug_exposures_data else []
+            drug_context = self._summarize_drug_exposures(drug_exposures, request.drug_name)
 
             # Get safety prediction if available
             prediction_context = {}
             if request.include_prediction:
-                prediction_context = self._get_safety_prediction(patient, context)
+                prediction_data = await context.invoke_tool(
+                    "prediction_lookup",
+                    {
+                        "session": context.session,
+                        "prediction_type": "safety",
+                        "patient_id": str(patient.id),
+                    },
+                )
+                prediction_context = prediction_data.get("prediction") if prediction_data else {}
 
             # Build analysis using LLM
             system_prompt = self.prompt_registry.get_prompt_or_default(
@@ -95,16 +119,25 @@ class SafetyInvestigatorAgent(BaseAgent):
                 "You are a clinical safety investigator.",
             )
 
+            llm_input = "\n".join(
+                [
+                    f"Patient Summary: {patient_summary}",
+                    f"Safety Context: {event_context}",
+                    f"Drug Context: {drug_context}",
+                    f"Prediction: {prediction_context}",
+                ]
+            )
+
             analysis_text = await self.llm_provider.complete(
-                messages=[],
+                messages=[Message("user", llm_input)],
                 system_prompt=system_prompt,
                 temperature=0.7,
                 max_tokens=2000,
             )
 
             # Identify suspicious patterns
-            suspicious = self._identify_suspicious_patterns(patient, request.drug_name)
-            drug_interactions = self._identify_drug_interactions(patient, request.drug_name)
+            suspicious = self._identify_suspicious_patterns(adverse_events, request.drug_name)
+            drug_interactions = self._identify_drug_interactions(drug_exposures, patient, request.drug_name)
 
             # Build result
             result = SafetyInvestigationResult(
@@ -121,7 +154,6 @@ class SafetyInvestigatorAgent(BaseAgent):
                 prediction_context=prediction_context,
                 recent_events=recent_events,
                 drug_interaction_concerns=drug_interactions,
-                tool_calls_used=["patient_lookup", "adverse_event_lookup", "drug_exposure_lookup"],
             )
 
             return result
@@ -152,22 +184,22 @@ class SafetyInvestigatorAgent(BaseAgent):
             f"comorbidities: {patient.comorbidity_summary or 'None documented'}"
         )
 
-    def _extract_recent_events(self, patient: Any) -> list[dict[str, Any]]:
+    def _extract_recent_events(self, adverse_events: list[Any]) -> list[dict[str, Any]]:
         """Extract recent adverse events with summary.
 
         Args:
-            patient: Patient ORM model instance
+            adverse_events: Adverse event model instances
 
         Returns:
             List of recent event dictionaries
         """
         events = []
-        if not hasattr(patient, "adverse_events") or not patient.adverse_events:
+        if not adverse_events:
             return events
 
         # Sort by date and get last 10
         sorted_events = sorted(
-            patient.adverse_events,
+            adverse_events,
             key=lambda x: x.event_date,
             reverse=True,
         )[:10]
@@ -184,32 +216,32 @@ class SafetyInvestigatorAgent(BaseAgent):
 
         return events
 
-    def _summarize_adverse_events(self, patient: Any) -> str:
+    def _summarize_adverse_events(self, adverse_events: list[Any]) -> str:
         """Summarize adverse event history.
 
         Args:
-            patient: Patient ORM model instance
+            adverse_events: Adverse event model instances
 
         Returns:
             Adverse events summary
         """
-        if not hasattr(patient, "adverse_events") or not patient.adverse_events:
+        if not adverse_events:
             return "No adverse events documented."
 
-        serious_count = sum(1 for ae in patient.adverse_events if ae.is_serious)
-        total_count = len(patient.adverse_events)
+        serious_count = sum(1 for ae in adverse_events if ae.is_serious)
+        total_count = len(adverse_events)
 
         # Get events from last 90 days
         cutoff_date = datetime.utcnow() - timedelta(days=90)
         recent_count = sum(
-            1 for ae in patient.adverse_events if ae.event_date >= cutoff_date.date()
+            1 for ae in adverse_events if ae.event_date >= cutoff_date.date()
         )
 
         summary = f"Adverse event history: {total_count} total events, {serious_count} serious, {recent_count} in last 90 days."
 
         # Get most common event types
         event_types = {}
-        for ae in patient.adverse_events:
+        for ae in adverse_events:
             event_type = ae.event_type if hasattr(ae, "event_type") else "Unknown"
             event_types[event_type] = event_types.get(event_type, 0) + 1
 
@@ -219,63 +251,35 @@ class SafetyInvestigatorAgent(BaseAgent):
 
         return summary
 
-    def _summarize_drug_exposures(self, patient: Any, drug_name: str | None = None) -> str:
+    def _summarize_drug_exposures(self, drug_exposures: list[Any], drug_name: str | None = None) -> str:
         """Summarize drug exposures, optionally filtered.
 
         Args:
-            patient: Patient ORM model instance
+            drug_exposures: Drug exposure model instances
             drug_name: Optional specific drug to filter on
 
         Returns:
             Drug exposures summary
         """
-        if not hasattr(patient, "drug_exposures") or not patient.drug_exposures:
+        if not drug_exposures:
             return "No documented drug exposures."
 
         if drug_name:
-            exposures = [de for de in patient.drug_exposures if drug_name.lower() in de.drug_name.lower()]
+            exposures = [de for de in drug_exposures if drug_name.lower() in de.drug_name.lower()]
             if not exposures:
                 return f"No exposures found for drug: {drug_name}"
 
             active = sum(1 for de in exposures if de.is_active)
             return f"Drug {drug_name}: {active} active exposure(s), {len(exposures)} total."
         else:
-            active = sum(1 for de in patient.drug_exposures if de.is_active)
-            return f"Current medications: {active} active drugs, {len(patient.drug_exposures)} total exposures."
+            active = sum(1 for de in drug_exposures if de.is_active)
+            return f"Current medications: {active} active drugs, {len(drug_exposures)} total exposures."
 
-    def _get_safety_prediction(self, patient: Any, context: ExecutionContext) -> dict[str, Any]:
-        """Get safety prediction if available.
-
-        Args:
-            patient: Patient model
-            context: Execution context
-
-        Returns:
-            Prediction context dictionary
-        """
-        try:
-            from pharma_os.db.repositories.prediction_repository import PredictionRepository
-
-            pred_repo = PredictionRepository(context.session)
-            predictions = pred_repo.get_safety_predictions(patient.id)
-
-            if predictions:
-                latest = predictions[0]
-                return {
-                    "risk_probability": float(latest.risk_probability) if hasattr(latest, "risk_probability") else None,
-                    "risk_class": latest.risk_class if hasattr(latest, "risk_class") else None,
-                    "created_at": str(latest.created_at) if hasattr(latest, "created_at") else None,
-                }
-        except Exception as e:
-            logger.debug(f"Could not retrieve safety prediction: {e}")
-
-        return {}
-
-    def _identify_suspicious_patterns(self, patient: Any, drug_name: str | None = None) -> list[str]:
+    def _identify_suspicious_patterns(self, adverse_events: list[Any], drug_name: str | None = None) -> list[str]:
         """Identify suspicious patterns in adverse events.
 
         Args:
-            patient: Patient model
+            adverse_events: Adverse event model instances
             drug_name: Optional specific drug to focus on
 
         Returns:
@@ -283,17 +287,17 @@ class SafetyInvestigatorAgent(BaseAgent):
         """
         patterns = []
 
-        if not hasattr(patient, "adverse_events") or not patient.adverse_events:
+        if not adverse_events:
             return patterns
 
         # Count serious events
-        serious_events = [ae for ae in patient.adverse_events if ae.is_serious]
+        serious_events = [ae for ae in adverse_events if ae.is_serious]
         if len(serious_events) > 3:
             patterns.append(f"Multiple serious adverse events ({len(serious_events)})")
 
         # Check for clustering
-        if len(patient.adverse_events) > 5:
-            sorted_events = sorted(patient.adverse_events, key=lambda x: x.event_date)
+        if len(adverse_events) > 5:
+            sorted_events = sorted(adverse_events, key=lambda x: x.event_date)
             # Check for 3+ events within 30 days
             for i in range(len(sorted_events) - 2):
                 date_diff = (sorted_events[i + 2].event_date - sorted_events[i].event_date).days
@@ -303,7 +307,7 @@ class SafetyInvestigatorAgent(BaseAgent):
 
         # Check for specific event type recurrence
         event_types = {}
-        for ae in patient.adverse_events:
+        for ae in adverse_events:
             event_type = ae.event_type if hasattr(ae, "event_type") else "Unknown"
             event_types[event_type] = event_types.get(event_type, 0) + 1
 
@@ -313,10 +317,16 @@ class SafetyInvestigatorAgent(BaseAgent):
 
         return patterns
 
-    def _identify_drug_interactions(self, patient: Any, drug_name: str | None = None) -> list[str]:
+    def _identify_drug_interactions(
+        self,
+        drug_exposures: list[Any],
+        patient: Any,
+        drug_name: str | None = None,
+    ) -> list[str]:
         """Identify potential drug interactions or cumulative toxicity.
 
         Args:
+            drug_exposures: Drug exposure model instances
             patient: Patient model
             drug_name: Optional specific drug to focus on
 
@@ -325,10 +335,10 @@ class SafetyInvestigatorAgent(BaseAgent):
         """
         concerns = []
 
-        if not hasattr(patient, "drug_exposures") or not patient.drug_exposures:
+        if not drug_exposures:
             return concerns
 
-        active_drugs = [de for de in patient.drug_exposures if de.is_active]
+        active_drugs = [de for de in drug_exposures if de.is_active]
 
         if len(active_drugs) > 5:
             concerns.append(f"Polypharmacy: {len(active_drugs)} active concurrent medications")
