@@ -13,10 +13,27 @@ class TargetPreparationResult:
 
     target_name: str
     target_mode: str
+    label_source_type: str
+    weak_supervision: bool
     y: list[int] | list[float]
     dropped_feature_columns: list[str]
+    derivation_columns: list[str]
     positive_ratio: float
+    warnings: list[str] = field(default_factory=list)
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class FeatureMatrixBuildResult:
+    """Result of leakage-aware feature matrix construction."""
+
+    X: Any
+    used_feature_columns: list[str]
+    excluded_feature_columns: list[str]
+    excluded_identifier_columns: list[str]
+    excluded_target_columns: list[str]
+    excluded_derivation_columns: list[str]
+    leakage_guard_notes: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -51,6 +68,8 @@ class UseCaseTrainingResult:
     trained: bool
     selected_model: str
     target_mode: str
+    label_source_type: str
+    weak_supervision: bool
     row_count: int
     artifacts: TrainingArtifactSet | None
     notes: list[str] = field(default_factory=list)

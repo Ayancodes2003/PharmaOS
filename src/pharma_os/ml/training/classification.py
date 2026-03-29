@@ -26,6 +26,8 @@ class ClassificationTrainingOutput:
     evaluations: dict[str, dict[str, dict[str, float] | dict[str, int]]]
     class_balance: dict[str, float]
     feature_columns: list[str]
+    split_sizes: dict[str, int]
+    model_selection_summary: dict[str, object]
 
 
 def train_binary_classification_models(
@@ -110,6 +112,11 @@ def train_binary_classification_models(
     final_test_eval = _evaluate_split(selected, X_test, y_test)
     evaluations[best_name]["test_retrained"] = final_test_eval
 
+    candidate_validation_scores = {
+        name: float(payload["validation"]["metrics"].get("roc_auc", payload["validation"]["metrics"]["f1"]))
+        for name, payload in evaluations.items()
+    }
+
     return ClassificationTrainingOutput(
         selected_model_name=best_name,
         selected_model=selected,
@@ -119,6 +126,20 @@ def train_binary_classification_models(
             "negative_ratio": float(1.0 - y.mean()),
         },
         feature_columns=list(X.columns),
+        split_sizes={
+            "train_rows": int(len(X_train.index)),
+            "validation_rows": int(len(X_val.index)),
+            "test_rows": int(len(X_test.index)),
+            "train_validation_rows": int(len(X_train_val.index)),
+            "full_rows": int(len(X.index)),
+        },
+        model_selection_summary={
+            "selection_metric": "validation_roc_auc_with_f1_fallback",
+            "candidate_validation_scores": candidate_validation_scores,
+            "selected_model": best_name,
+            "selected_score": float(best_score),
+            "selection_rule": "Choose candidate with best validation ROC-AUC; if unavailable, fallback to validation F1.",
+        },
     )
 
 

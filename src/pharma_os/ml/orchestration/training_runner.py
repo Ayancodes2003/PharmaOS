@@ -56,19 +56,40 @@ def train_single_use_case(
             "ranking_mode": "deterministic_weighted_score",
             "score_formula": "4*condition_fit + 2*urgency_proxy + 2*enrollment_ready_flag - 2*exclusion_risk_signal - I(active_exposure_count>=3)",
             "source_feature_run_id": feature_run_id,
+            "model_family": "non_supervised_score_prioritization",
+            "interview_defensibility_note": "This is a transparent score-based prioritization artifact, not a supervised ranking model.",
         }
         summary_payload = {
-            "mode": "score_only",
+            "mode": "score_based_prioritization",
+            "supervised_model_trained": False,
             "row_count": int(len(dataset.index)),
             "avg_score": float(dataset["ranking_score_component"].mean()) if not dataset.empty else 0.0,
             "p90_score": float(dataset["ranking_score_component"].quantile(0.9)) if not dataset.empty else 0.0,
-            "target_strategy": target_result.details,
+            "target_strategy": {
+                "target_name": target_result.target_name,
+                "target_mode": target_result.target_mode,
+                "label_source_type": target_result.label_source_type,
+                "weak_supervision": target_result.weak_supervision,
+                "warnings": target_result.warnings,
+                "details": target_result.details,
+            },
+            "integrity_warning": "No supervised recruitment label available. Scores are deterministic prioritization signals only.",
+        }
+
+        target_summary = {
+            "target_name": target_result.target_name,
+            "target_mode": target_result.target_mode,
+            "label_source_type": target_result.label_source_type,
+            "weak_supervision": target_result.weak_supervision,
+            "warnings": target_result.warnings,
+            "details": target_result.details,
         }
 
         artifacts = persist_recruitment_ranking_artifacts(
             training_run_id=training_run_id,
             ranking_config=ranking_config,
             summary_payload=summary_payload,
+            target_summary=target_summary,
             settings=settings,
         )
 
@@ -79,12 +100,21 @@ def train_single_use_case(
             trained=False,
             selected_model="score_based_ranker",
             target_mode=target_result.target_mode,
+            label_source_type=target_result.label_source_type,
+            weak_supervision=target_result.weak_supervision,
             row_count=int(len(dataset.index)),
             artifacts=artifacts,
-            notes=["No reliable supervised recruitment target found; persisted deterministic ranking configuration."],
+            notes=[
+                "No reliable supervised recruitment target found; persisted deterministic score-based prioritization configuration.",
+                "This artifact must not be interpreted as a supervised ranking model.",
+            ],
         )
 
-    X = build_feature_matrix(df=dataset, dropped_feature_columns=target_result.dropped_feature_columns)
+    feature_matrix_result = build_feature_matrix(
+        df=dataset,
+        dropped_feature_columns=target_result.dropped_feature_columns,
+    )
+    X = feature_matrix_result.X
     y = pd.Series(target_result.y, index=dataset.index).astype("int64")
 
     if y.nunique(dropna=False) < 2:
@@ -95,9 +125,14 @@ def train_single_use_case(
             trained=False,
             selected_model="none",
             target_mode=target_result.target_mode,
+            label_source_type=target_result.label_source_type,
+            weak_supervision=target_result.weak_supervision,
             row_count=int(len(dataset.index)),
             artifacts=None,
-            notes=["Training skipped because target contains a single class after preparation."],
+            notes=[
+                "Training skipped because target contains a single class after preparation.",
+                "Target strategy retained for traceability; no model performance claims should be made for this run.",
+            ],
         )
 
     training_output = train_binary_classification_models(X=X, y=y)
@@ -106,9 +141,13 @@ def train_single_use_case(
     target_summary = {
         "target_name": target_result.target_name,
         "target_mode": target_result.target_mode,
+        "label_source_type": target_result.label_source_type,
+        "weak_supervision": target_result.weak_supervision,
         "positive_ratio": target_result.positive_ratio,
+        "warnings": target_result.warnings,
         "details": target_result.details,
         "dropped_feature_columns": target_result.dropped_feature_columns,
+        "derivation_columns": target_result.derivation_columns,
     }
 
     artifacts = persist_classification_training_artifacts(
@@ -117,13 +156,30 @@ def train_single_use_case(
         model_name=training_output.selected_model_name,
         model=training_output.selected_model,
         evaluations=training_output.evaluations,
-        feature_columns=training_output.feature_columns,
+        used_feature_columns=feature_matrix_result.used_feature_columns,
+        excluded_feature_columns=feature_matrix_result.excluded_feature_columns,
+        excluded_identifier_columns=feature_matrix_result.excluded_identifier_columns,
+        excluded_target_columns=feature_matrix_result.excluded_target_columns,
+        excluded_derivation_columns=feature_matrix_result.excluded_derivation_columns,
+        leakage_guard_notes=feature_matrix_result.leakage_guard_notes,
         target_summary=target_summary,
         extra_metadata={
             "feature_run_id": feature_run_id,
             "class_balance": training_output.class_balance,
+            "evaluation_honesty": {
+                "label_source_type": target_result.label_source_type,
+                "weak_supervision": target_result.weak_supervision,
+                "warnings": target_result.warnings,
+                "performance_claim_policy": (
+                    "Metrics are descriptive for weak-label runs and must not be interpreted as fully supervised generalization quality."
+                    if target_result.weak_supervision
+                    else "Metrics are evaluated against observed labels present in feature artifacts."
+                ),
+            },
         },
         feature_importance_df=feature_importance_df,
+        split_sizes=training_output.split_sizes,
+        model_selection_summary=training_output.model_selection_summary,
         settings=settings,
     )
 
@@ -143,6 +199,8 @@ def train_single_use_case(
         trained=True,
         selected_model=training_output.selected_model_name,
         target_mode=target_result.target_mode,
+        label_source_type=target_result.label_source_type,
+        weak_supervision=target_result.weak_supervision,
         row_count=int(len(dataset.index)),
         artifacts=artifacts,
         notes=[],
@@ -179,6 +237,8 @@ def train_all_use_cases(
                 trained=False,
                 selected_model="none",
                 target_mode="error",
+                label_source_type="error",
+                weak_supervision=False,
                 row_count=0,
                 artifacts=None,
                 notes=[str(exc)],
